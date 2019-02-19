@@ -3,6 +3,7 @@
 #include <Adafruit_SSD1331.h>
 #include <SoftwareSerial.h>
 #include <avr/pgmspace.h>
+#include "DHTesp.h"
 
 // screen pins
 #define CLK 11
@@ -14,6 +15,7 @@
 #define MH_Z19_RX 7
 #define MH_Z19_TX 6
 #define BEEP_PIN  5
+#define DHT22_PIN 2
 
 // http://www.barth-dev.de/online/rgb565-color-picker/
 #define BLACK      0x0000
@@ -30,7 +32,7 @@
 const unsigned int COLOR_LVL [] = {0x0660, 0xCE79, 0xFE60, 0xFB20, 0xF800};
 
 #define INTERVAL 5 // measurement interval, sec
-#define PREHEAT 180 // preheat time, sec
+#define PREHEAT 5 // preheat time, sec
 #define MAX_DATA_ERRORS 15 //max of errors, reset after them
 #define SCR_W 96 // screen width
 #define BUF_SZ 5 // size of ring buffer for median filter
@@ -84,12 +86,17 @@ int previous_ppm = 0;
 long avg_ppm_past_period = 0;
 int prev_lvl = -1;
 int errorCount = 0;
+float prev_hum = 0.0;
+float prev_temp_c = 0.0;
+float prev_heat_idx = 0.0;
+int temp_hum_prev_read_time = 0;
 unsigned int measure_id = -1;
 unsigned int graphic_pos = 0;
 unsigned int graph_advance_ticks = 0;
 unsigned long last_beep_time_ms = 0;
 SoftwareSerial co2Serial(MH_Z19_RX, MH_Z19_TX); // define MH-Z19
 Adafruit_SSD1331 disp = Adafruit_SSD1331(CS, DC, DIN, CLK, RST); // define SSD1331 96x64 OLED
+DHTesp dht;
 
 void(* resetFunc) (void) = 0; //declare reset function @ address 0
 
@@ -168,7 +175,13 @@ void draw_bg() {
   
   disp.setTextColor(WHITE);
   disp.setCursor(0, GRAPH_H + 6);
-  disp.print("PPM = ");
+  disp.print("PPM:");
+  disp.setCursor(0, GRAPH_H + (FONT_H + 1) + 6);
+  disp.print("HUM:");
+  disp.setCursor(0, GRAPH_H + (FONT_H + 1) * 2 + 6);
+  disp.print("TMP:");
+  disp.setCursor(0, GRAPH_H + (FONT_H + 1) * 3 + 6);
+  disp.print("TIX:");
   disp.drawFastHLine(0, GRAPH_H, 96, DGRAY);
   disp.drawBitmap(CAT_X, CAT_Y, bmp_body,    33, 19, MGRAY);
   disp.drawBitmap(CAT_X, CAT_Y, bmp_stripes, 33, 19, DGRAY);
@@ -203,6 +216,46 @@ void draw_ppm(int ppm) {
     draw_cat_face(lvl);
   }
   prev_lvl = lvl;
+}
+
+void draw_temp_hum() {
+  int now = millis();
+  if (now - temp_hum_prev_read_time < dht.getMinimumSamplingPeriod()) {
+    return;
+  }
+
+  float hum = dht.getHumidity();
+  float temp_c = dht.getTemperature();
+  float heat_idx = dht.computeHeatIndex(temp_c, hum, false);
+  
+  int x = FONT_W * 5;
+  int y = GRAPH_H + 14;
+
+  disp.setTextColor(BLACK);
+  disp.setCursor(x, GRAPH_H + (FONT_H + 1) + 6);
+  disp.print(String(prev_hum));
+  disp.setTextColor(BLUE);
+  disp.setCursor(x, GRAPH_H + (FONT_H + 1) + 6);
+  disp.print(String(hum));
+  prev_hum = hum;
+
+  disp.setTextColor(BLACK);
+  disp.setCursor(x, GRAPH_H + (FONT_H + 1) * 2 + 6);
+  disp.print(String(prev_temp_c));
+  disp.setTextColor(RED);
+  disp.setCursor(x, GRAPH_H + (FONT_H + 1) * 2 + 6);
+  disp.print(String(temp_c));
+  prev_temp_c = temp_c;
+
+  disp.setTextColor(BLACK);
+  disp.setCursor(x, GRAPH_H + (FONT_H + 1) * 3 + 6);
+  disp.print(String(prev_heat_idx));
+  disp.setTextColor(YELLOW);
+  disp.setCursor(x, GRAPH_H + (FONT_H + 1) * 3 + 6);
+  disp.print(String(heat_idx));
+  prev_heat_idx = heat_idx;
+
+  temp_hum_prev_read_time = now;
 }
 
 void draw_graph(int ppm) {
@@ -243,6 +296,7 @@ void setup() {
   co2Serial.begin(9600); //Init sensor MH-Z19(14)
 
   disp.begin();
+  dht.setup(DHT22_PIN, DHTesp::DHT22);
 
   Serial.println("Waiting for sensor to init");
   Serial.println("Heating...");
@@ -303,7 +357,8 @@ void loop() {
     }
   }
 
+  draw_temp_hum();
+
   Serial.println(" --- ");
   wait_sec(INTERVAL);
 }
-
